@@ -1130,7 +1130,7 @@ Executed Time
 
 <form
     method="POST"
-    action="server_control.php"
+    action="server_command.php"
     onsubmit="
         return confirm(
             'START the local XAMPP server on MY-PC?'
