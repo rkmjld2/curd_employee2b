@@ -2,33 +2,35 @@
 /*
 ============================================================
  CURD-EMPLOYEE2B
- REMOTE SERVER CONTROL
+ REMOTE LOCAL-SERVER CONTROL
 ============================================================
 
 Purpose:
-    Receives START / STOP commands for the local server.
+    Send START / STOP command to the local server.
 
 Database:
-    CURD_EMPLOYEE2 database
+    CURD_EMPLOYEE2
 
 Table:
     local_server_control
 
-Expected table fields:
+Actual table fields:
     id
+    server_id
     command
     status
-    updated_at
+    last_seen
+    command_time
+    executed_time
+    created_at
 
 IMPORTANT:
-    This file ONLY records the command in the remote
-    database.
+    This file records the command in TiDB Cloud.
 
-    It does NOT directly start or stop the local
-    XAMPP server.
+    It does NOT directly start or stop XAMPP.
 
-    The local server-control program will periodically
-    read this table and execute the command locally.
+    A local control program will later read the
+    command and start/stop the local server.
 
 ============================================================
 */
@@ -42,10 +44,23 @@ date_default_timezone_set("Asia/Kolkata");
 
 
 /* =========================================================
-   DATABASE CONNECTION
+   DATABASE
 ========================================================= */
 
 require_once __DIR__ . "/db.php";
+
+
+/* =========================================================
+   SERVER ID
+=========================================================
+
+   IMPORTANT:
+   Change this value if you want to control a different
+   local server.
+
+========================================================= */
+
+$server_id = "LOCAL_SERVER_1";
 
 
 /* =========================================================
@@ -59,7 +74,7 @@ $allowed_commands = [
 
 
 /* =========================================================
-   REQUEST METHOD
+   ONLY POST REQUESTS
 ========================================================= */
 
 if (
@@ -68,11 +83,17 @@ if (
 
     http_response_code(405);
 
-    header("Content-Type: application/json");
+    header(
+        "Content-Type: application/json"
+    );
 
     echo json_encode([
+
         "success" => false,
-        "message" => "Only POST requests are allowed."
+
+        "message" =>
+            "Only POST requests are allowed."
+
     ]);
 
     exit;
@@ -83,11 +104,12 @@ if (
    GET COMMAND
 ========================================================= */
 
-$command = strtoupper(
-    trim(
-        $_POST["command"] ?? ""
-    )
-);
+$command =
+    strtoupper(
+        trim(
+            $_POST["command"] ?? ""
+        )
+    );
 
 
 /* =========================================================
@@ -104,11 +126,17 @@ if (
 
     http_response_code(400);
 
-    header("Content-Type: application/json");
+    header(
+        "Content-Type: application/json"
+    );
 
     echo json_encode([
+
         "success" => false,
-        "message" => "Invalid command. Use START or STOP."
+
+        "message" =>
+            "Invalid command. Use START or STOP."
+
     ]);
 
     exit;
@@ -116,107 +144,151 @@ if (
 
 
 /* =========================================================
-   CURRENT TIME
+   CURRENT IST TIME
 ========================================================= */
 
-$now = date(
-    "Y-m-d H:i:s"
-);
+$command_time =
+    date(
+        "Y-m-d H:i:s"
+    );
 
 
 /* =========================================================
-   CHECK WHETHER RECORD EXISTS
+   CHECK SERVER RECORD
 ========================================================= */
 
-$check = $conn->prepare("
-    SELECT id
-    FROM local_server_control
-    ORDER BY id ASC
-    LIMIT 1
-");
+$check =
+    $conn->prepare("
+        SELECT
+            id
+        FROM local_server_control
+        WHERE server_id = ?
+        LIMIT 1
+    ");
 
 
 if (!$check) {
 
     http_response_code(500);
 
-    header("Content-Type: application/json");
+    header(
+        "Content-Type: application/json"
+    );
 
     echo json_encode([
+
         "success" => false,
-        "message" => "Database preparation failed.",
-        "error" => $conn->error
+
+        "message" =>
+            "Database preparation failed.",
+
+        "error" =>
+            $conn->error
+
     ]);
 
     exit;
 }
 
 
-$check->execute();
+$check->bind_param(
+    "s",
+    $server_id
+);
+
+
+if (!$check->execute()) {
+
+    $error =
+        $check->error;
+
+    $check->close();
+
+    http_response_code(500);
+
+    header(
+        "Content-Type: application/json"
+    );
+
+    echo json_encode([
+
+        "success" => false,
+
+        "message" =>
+            "Unable to check server.",
+
+        "error" =>
+            $error
+
+    ]);
+
+    exit;
+}
+
 
 $result =
     $check->get_result();
 
+
 $existing =
     $result->fetch_assoc();
+
 
 $check->close();
 
 
 /* =========================================================
-   UPDATE EXISTING CONTROL RECORD
+   UPDATE EXISTING SERVER
 ========================================================= */
 
 if ($existing) {
 
-    $id =
+    $server_db_id =
         (int)$existing["id"];
 
 
-    $stmt = $conn->prepare("
-        UPDATE local_server_control
-        SET
-            command = ?,
-            status = ?,
-            updated_at = ?
-        WHERE id = ?
-    ");
+    $stmt =
+        $conn->prepare("
+            UPDATE local_server_control
+            SET
+                command = ?,
+                command_time = ?
+            WHERE
+                id = ?
+                AND server_id = ?
+        ");
 
 
     if (!$stmt) {
 
         http_response_code(500);
 
-        header("Content-Type: application/json");
+        header(
+            "Content-Type: application/json"
+        );
 
         echo json_encode([
+
             "success" => false,
-            "message" => "Update preparation failed.",
-            "error" => $conn->error
+
+            "message" =>
+                "Update preparation failed.",
+
+            "error" =>
+                $conn->error
+
         ]);
 
         exit;
     }
 
 
-    /*
-     * When START is requested:
-     *
-     * command = START
-     * status  = START
-     *
-     * When STOP is requested:
-     *
-     * command = STOP
-     * status  = STOP
-     */
-
     $stmt->bind_param(
-        "sssi",
+        "ssis",
         $command,
-        $command,
-        $now,
-        $id
+        $command_time,
+        $server_db_id,
+        $server_id
     );
 
 
@@ -229,12 +301,20 @@ if ($existing) {
 
         http_response_code(500);
 
-        header("Content-Type: application/json");
+        header(
+            "Content-Type: application/json"
+        );
 
         echo json_encode([
+
             "success" => false,
-            "message" => "Unable to update server command.",
-            "error" => $error
+
+            "message" =>
+                "Unable to update server command.",
+
+            "error" =>
+                $error
+
         ]);
 
         exit;
@@ -245,37 +325,48 @@ if ($existing) {
 
 
 /* =========================================================
-   CREATE FIRST CONTROL RECORD
+   CREATE SERVER RECORD
 ========================================================= */
 
 } else {
 
-    $stmt = $conn->prepare("
-        INSERT INTO local_server_control
-        (
-            command,
-            status,
-            updated_at
-        )
-        VALUES
-        (
-            ?,
-            ?,
-            ?
-        )
-    ");
+    $stmt =
+        $conn->prepare("
+            INSERT INTO local_server_control
+            (
+                server_id,
+                command,
+                status,
+                command_time
+            )
+            VALUES
+            (
+                ?,
+                ?,
+                'OFFLINE',
+                ?
+            )
+        ");
 
 
     if (!$stmt) {
 
         http_response_code(500);
 
-        header("Content-Type: application/json");
+        header(
+            "Content-Type: application/json"
+        );
 
         echo json_encode([
+
             "success" => false,
-            "message" => "Insert preparation failed.",
-            "error" => $conn->error
+
+            "message" =>
+                "Insert preparation failed.",
+
+            "error" =>
+                $conn->error
+
         ]);
 
         exit;
@@ -284,9 +375,9 @@ if ($existing) {
 
     $stmt->bind_param(
         "sss",
+        $server_id,
         $command,
-        $command,
-        $now
+        $command_time
     );
 
 
@@ -299,12 +390,20 @@ if ($existing) {
 
         http_response_code(500);
 
-        header("Content-Type: application/json");
+        header(
+            "Content-Type: application/json"
+        );
 
         echo json_encode([
+
             "success" => false,
-            "message" => "Unable to create server command.",
-            "error" => $error
+
+            "message" =>
+                "Unable to create server command.",
+
+            "error" =>
+                $error
+
         ]);
 
         exit;
@@ -323,21 +422,26 @@ header(
     "Content-Type: application/json"
 );
 
+
 echo json_encode([
 
     "success" => true,
 
-    "command" => $command,
+    "server_id" =>
+        $server_id,
 
-    "status" => $command,
+    "command" =>
+        $command,
 
-    "updated_at" => $now,
+    "command_time" =>
+        $command_time,
 
     "message" =>
-        "Server command " .
+        "Command " .
         $command .
         " recorded successfully."
 
 ]);
+
 
 exit;
