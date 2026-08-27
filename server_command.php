@@ -8,7 +8,7 @@
 Remote page:
     https://curd-employee2b.onrender.com/server_command.php
 
-Local computer:
+Local PC:
     MY-PC
 
 XAMPP:
@@ -32,7 +32,17 @@ Status:
 ============================================================
 */
 
+
+/* =========================================================
+   TIMEZONE
+========================================================= */
+
 date_default_timezone_set("Asia/Kolkata");
+
+
+/* =========================================================
+   SESSION
+========================================================= */
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -40,7 +50,7 @@ if (session_status() === PHP_SESSION_NONE) {
 
 
 /* =========================================================
-   LICENSE
+   LICENSE PROTECTION
 ========================================================= */
 
 require_once __DIR__ . "/license_guard.php";
@@ -54,7 +64,7 @@ require_once __DIR__ . "/db.php";
 
 
 /* =========================================================
-   LOGIN
+   USER LOGIN PROTECTION
 ========================================================= */
 
 if (
@@ -65,6 +75,10 @@ if (
     exit;
 }
 
+
+/* =========================================================
+   CURRENT USER
+========================================================= */
 
 $current_user_id =
     $_SESSION["app_user_id"];
@@ -85,61 +99,169 @@ $server_id = "MY-PC";
 ========================================================= */
 
 $message = "";
+
 $message_type = "";
 
 
 /* =========================================================
-   FUNCTION: GET SERVER
+   PROCESS START / STOP COMMAND
 ========================================================= */
 
-function getServerRecord($conn, $server_id)
-{
-    $stmt = $conn->prepare("
-        SELECT
-            id,
-            server_id,
-            command,
-            status,
-            last_seen,
-            command_time,
-            executed_time,
-            created_at
-        FROM local_server_control
-        WHERE server_id = ?
-        LIMIT 1
-    ");
+if (
+    $_SERVER["REQUEST_METHOD"] === "POST" &&
+    isset($_POST["server_command"])
+) {
 
-    if (!$stmt) {
-        return null;
+    $requested_command =
+        strtoupper(
+            trim(
+                $_POST["server_command"]
+            )
+        );
+
+
+    /* =====================================================
+       ONLY START OR STOP ARE ALLOWED
+    ===================================================== */
+
+    if (
+        $requested_command !== "START" &&
+        $requested_command !== "STOP"
+    ) {
+
+        $message =
+            "Invalid server command.";
+
+        $message_type =
+            "error";
+
+    } else {
+
+        /* =================================================
+           WRITE COMMAND TO TiDB
+        ================================================= */
+
+        $stmt = $conn->prepare("
+            UPDATE local_server_control
+            SET
+                command = ?,
+                command_time = CURRENT_TIMESTAMP
+            WHERE
+                server_id = ?
+        ");
+
+
+        if (!$stmt) {
+
+            $message =
+                "Database error: " .
+                $conn->error;
+
+            $message_type =
+                "error";
+
+        } else {
+
+            $stmt->bind_param(
+                "ss",
+                $requested_command,
+                $server_id
+            );
+
+
+            if ($stmt->execute()) {
+
+                $message =
+                    "Command " .
+                    $requested_command .
+                    " sent to " .
+                    $server_id .
+                    ".";
+
+                $message_type =
+                    "success";
+
+            } else {
+
+                $message =
+                    "Command failed: " .
+                    $stmt->error;
+
+                $message_type =
+                    "error";
+            }
+
+
+            $stmt->close();
+        }
     }
-
-    $stmt->bind_param("s", $server_id);
-
-    $stmt->execute();
-
-    $result = $stmt->get_result();
-
-    $server = null;
-
-    if ($result && $result->num_rows > 0) {
-        $server = $result->fetch_assoc();
-    }
-
-    $stmt->close();
-
-    return $server;
 }
 
 
 /* =========================================================
-   GET EXISTING RECORD
+   READ SERVER INFORMATION
 ========================================================= */
 
-$server = getServerRecord($conn, $server_id);
+$stmt = $conn->prepare("
+    SELECT
+        id,
+        server_id,
+        command,
+        status,
+        last_seen,
+        command_time,
+        executed_time,
+        created_at
+    FROM local_server_control
+    WHERE server_id = ?
+    LIMIT 1
+");
+
+
+if (!$stmt) {
+
+    die(
+        "Database preparation failed: " .
+        htmlspecialchars(
+            $conn->error,
+            ENT_QUOTES,
+            "UTF-8"
+        )
+    );
+}
+
+
+$stmt->bind_param(
+    "s",
+    $server_id
+);
+
+
+$stmt->execute();
+
+
+$result =
+    $stmt->get_result();
+
+
+$server = null;
+
+
+if (
+    $result &&
+    $result->num_rows > 0
+) {
+
+    $server =
+        $result->fetch_assoc();
+}
+
+
+$stmt->close();
 
 
 /* =========================================================
-   CREATE RECORD IF REQUIRED
+   CREATE RECORD IF IT DOES NOT EXIST
 ========================================================= */
 
 if (!$server) {
@@ -165,6 +287,7 @@ if (!$server) {
         )
     ");
 
+
     if ($stmt) {
 
         $stmt->bind_param(
@@ -177,172 +300,117 @@ if (!$server) {
         $stmt->close();
     }
 
-    $server =
-        getServerRecord(
-            $conn,
+
+    /* -----------------------------------------------------
+       Read record again
+    ----------------------------------------------------- */
+
+    $stmt = $conn->prepare("
+        SELECT
+            id,
+            server_id,
+            command,
+            status,
+            last_seen,
+            command_time,
+            executed_time,
+            created_at
+        FROM local_server_control
+        WHERE server_id = ?
+        LIMIT 1
+    ");
+
+
+    if ($stmt) {
+
+        $stmt->bind_param(
+            "s",
             $server_id
         );
-}
 
+        $stmt->execute();
 
-/* =========================================================
-   START / STOP COMMAND
-========================================================= */
+        $result =
+            $stmt->get_result();
 
-if (
-    $_SERVER["REQUEST_METHOD"] === "POST" &&
-    isset($_POST["server_command"])
-) {
+        if (
+            $result &&
+            $result->num_rows > 0
+        ) {
 
-    $requested_command =
-        strtoupper(
-            trim(
-                $_POST["server_command"]
-            )
-        );
-
-
-    if (
-        $requested_command !== "START" &&
-        $requested_command !== "STOP"
-    ) {
-
-        $message =
-            "Invalid server command.";
-
-        $message_type =
-            "error";
-
-    } else {
-
-        $stmt = $conn->prepare("
-            UPDATE local_server_control
-            SET
-                command = ?,
-                command_time = CURRENT_TIMESTAMP
-            WHERE
-                server_id = ?
-        ");
-
-        if (!$stmt) {
-
-            $message =
-                "Database error: " .
-                $conn->error;
-
-            $message_type =
-                "error";
-
-        } else {
-
-            $stmt->bind_param(
-                "ss",
-                $requested_command,
-                $server_id
-            );
-
-            if ($stmt->execute()) {
-
-                $message =
-                    "Command " .
-                    $requested_command .
-                    " sent to " .
-                    $server_id .
-                    ".";
-
-                $message_type =
-                    "success";
-
-            } else {
-
-                $message =
-                    "Command failed: " .
-                    $stmt->error;
-
-                $message_type =
-                    "error";
-            }
-
-            $stmt->close();
+            $server =
+                $result->fetch_assoc();
         }
-    }
 
-    $server =
-        getServerRecord(
-            $conn,
-            $server_id
-        );
+        $stmt->close();
+    }
 }
 
 
 /* =========================================================
-   SERVER DATA
+   DEFAULT VALUES
 ========================================================= */
-
-$status =
-    strtoupper(
-        $server["status"] ?? "OFFLINE"
-    );
 
 $command =
     strtoupper(
         $server["command"] ?? "NONE"
     );
 
+
+$database_status =
+    strtoupper(
+        $server["status"] ?? "OFFLINE"
+    );
+
+
 $last_seen =
     $server["last_seen"] ?? null;
 
+
 $command_time =
     $server["command_time"] ?? null;
+
 
 $executed_time =
     $server["executed_time"] ?? null;
 
 
 /* =========================================================
-   ONLINE / OFFLINE
-=========================================================
-
-   Python heartbeat is expected approximately every
-   few seconds.
-
-   ONLINE = heartbeat received within last 15 seconds.
+   DETERMINE REAL ONLINE STATUS FROM HEARTBEAT
 ========================================================= */
 
 $is_online = false;
+
 
 if (!empty($last_seen)) {
 
     $last_seen_timestamp =
         strtotime($last_seen);
 
-    if ($last_seen_timestamp !== false) {
+
+    if (
+        $last_seen_timestamp !== false
+    ) {
 
         $age =
             time() -
             $last_seen_timestamp;
 
+
+        /*
+         * Python sends heartbeat every few seconds.
+         *
+         * Allow up to 15 seconds.
+         */
+
         if (
             $age >= 0 &&
             $age <= 15
         ) {
+
             $is_online = true;
         }
     }
-}
-
-
-/*
- * IMPORTANT:
- *
- * We also require the database status to be ONLINE.
- *
- * This prevents the page from showing ONLINE when the
- * Python heartbeat is old but the server status is OFFLINE.
- */
-
-if ($status !== "ONLINE") {
-    $is_online = false;
 }
 
 
@@ -353,7 +421,29 @@ $display_status =
 
 
 /* =========================================================
-   ESCAPE
+   DISPLAY VALUES
+========================================================= */
+
+$last_seen_display =
+    !empty($last_seen)
+        ? $last_seen
+        : "Never";
+
+
+$command_time_display =
+    !empty($command_time)
+        ? $command_time
+        : "Never";
+
+
+$executed_time_display =
+    !empty($executed_time)
+        ? $executed_time
+        : "Never";
+
+
+/* =========================================================
+   HTML ESCAPE FUNCTION
 ========================================================= */
 
 function h($value)
@@ -379,20 +469,17 @@ function h($value)
     content="width=device-width, initial-scale=1.0"
 >
 
-<meta
-    http-equiv="refresh"
-    content="5"
->
-
 <title>
 CURD-EMPLOYEE2B - Local Server Control
 </title>
+
 
 <style>
 
 * {
     box-sizing: border-box;
 }
+
 
 body {
 
@@ -408,6 +495,7 @@ body {
     background: #f2f4f7;
 }
 
+
 .container {
 
     width: 100%;
@@ -416,6 +504,7 @@ body {
 
     margin: 40px auto;
 }
+
 
 .card {
 
@@ -430,6 +519,7 @@ body {
         rgba(0,0,0,0.15);
 }
 
+
 h1 {
 
     text-align: center;
@@ -437,7 +527,10 @@ h1 {
     color: #1d3557;
 
     margin-top: 0;
+
+    margin-bottom: 10px;
 }
+
 
 .subtitle {
 
@@ -449,7 +542,9 @@ h1 {
 }
 
 
-/* USER */
+/* =========================================================
+   USER BAR
+========================================================= */
 
 .user-bar {
 
@@ -474,12 +569,14 @@ h1 {
     gap: 10px;
 }
 
+
 .user-info {
 
     color: #084298;
 
     font-weight: bold;
 }
+
 
 .logout {
 
@@ -492,10 +589,20 @@ h1 {
     border-radius: 5px;
 
     text-decoration: none;
+
+    font-size: 14px;
 }
 
 
-/* MESSAGE */
+.logout:hover {
+
+    opacity: 0.85;
+}
+
+
+/* =========================================================
+   MESSAGE
+========================================================= */
 
 .message {
 
@@ -510,22 +617,30 @@ h1 {
     text-align: center;
 }
 
+
 .message.success {
 
     background: #d1e7dd;
 
     color: #0f5132;
+
+    border: 1px solid #a3cfbb;
 }
+
 
 .message.error {
 
     background: #f8d7da;
 
     color: #842029;
+
+    border: 1px solid #f1aeb5;
 }
 
 
-/* SERVER */
+/* =========================================================
+   SERVER TITLE
+========================================================= */
 
 .server-title {
 
@@ -539,6 +654,11 @@ h1 {
 
     margin-bottom: 20px;
 }
+
+
+/* =========================================================
+   STATUS BOX
+========================================================= */
 
 .status-box {
 
@@ -555,6 +675,7 @@ h1 {
     font-weight: bold;
 }
 
+
 .status-online {
 
     background: #d1e7dd;
@@ -563,6 +684,7 @@ h1 {
 
     border: 2px solid #198754;
 }
+
 
 .status-offline {
 
@@ -574,7 +696,9 @@ h1 {
 }
 
 
-/* TABLE */
+/* =========================================================
+   INFORMATION TABLE
+========================================================= */
 
 .info-table {
 
@@ -584,6 +708,7 @@ h1 {
 
     margin-bottom: 25px;
 }
+
 
 .info-table th,
 .info-table td {
@@ -595,6 +720,7 @@ h1 {
     text-align: left;
 }
 
+
 .info-table th {
 
     background: #1d3557;
@@ -604,6 +730,7 @@ h1 {
     width: 40%;
 }
 
+
 .info-table td {
 
     background: #f8f9fa;
@@ -612,7 +739,9 @@ h1 {
 }
 
 
-/* BUTTONS */
+/* =========================================================
+   BUTTON AREA
+========================================================= */
 
 .button-area {
 
@@ -626,6 +755,13 @@ h1 {
 
     margin-top: 20px;
 }
+
+
+.button-area form {
+
+    margin: 0;
+}
+
 
 .control-button {
 
@@ -646,23 +782,40 @@ h1 {
     min-width: 220px;
 }
 
+
 .start-button {
 
     background: #198754;
 }
+
+
+.start-button:hover {
+
+    background: #157347;
+}
+
 
 .stop-button {
 
     background: #dc3545;
 }
 
-.control-button:hover {
 
-    opacity: 0.85;
+.stop-button:hover {
+
+    background: #bb2d3b;
 }
 
 
-/* NOTE */
+.control-button:active {
+
+    transform: scale(0.98);
+}
+
+
+/* =========================================================
+   NOTE
+========================================================= */
 
 .note {
 
@@ -681,6 +834,21 @@ h1 {
     margin-top: 25px;
 }
 
+
+.note code {
+
+    background: rgba(0,0,0,0.06);
+
+    padding: 2px 4px;
+
+    border-radius: 3px;
+}
+
+
+/* =========================================================
+   REFRESH
+========================================================= */
+
 .refresh-info {
 
     text-align: center;
@@ -693,29 +861,47 @@ h1 {
 }
 
 
-@media(max-width:600px) {
+/* =========================================================
+   MOBILE
+========================================================= */
+
+@media (max-width: 600px) {
+
+    .container {
+
+        margin-top: 15px;
+    }
+
 
     .card {
+
         padding: 20px;
     }
 
+
     .control-button {
+
         width: 100%;
+
+        min-width: 0;
     }
+
 }
 
 </style>
 
 </head>
 
+
 <body>
+
 
 <div class="container">
 
-<div class="card">
 
-
-<!-- USER -->
+<!-- =====================================================
+     USER BAR
+===================================================== -->
 
 <div class="user-bar">
 
@@ -733,6 +919,7 @@ Logged in:
 
 </div>
 
+
 <a
     href="logout.php"
     class="logout"
@@ -743,25 +930,47 @@ Logout
 </div>
 
 
+<!-- =====================================================
+     MAIN CARD
+===================================================== -->
+
+<div class="card">
+
+
 <h1>
 CURD-EMPLOYEE2B
 </h1>
+
 
 <div class="subtitle">
 Remote Local Server Control
 </div>
 
 
-<?php if ($message !== ""): ?>
+<!-- =====================================================
+     MESSAGE
+===================================================== -->
 
-<div class="message <?= h($message_type) ?>">
+<?php if ($message !== "") { ?>
+
+<div
+    class="message
+    <?= $message_type === "success"
+        ? "success"
+        : "error"
+    ?>"
+>
 
 <?= h($message) ?>
 
 </div>
 
-<?php endif; ?>
+<?php } ?>
 
+
+<!-- =====================================================
+     SERVER
+===================================================== -->
 
 <div class="server-title">
 
@@ -771,7 +980,9 @@ SERVER:
 </div>
 
 
-<!-- STATUS -->
+<!-- =====================================================
+     ONLINE / OFFLINE
+===================================================== -->
 
 <div
     class="status-box
@@ -781,70 +992,121 @@ SERVER:
     ?>"
 >
 
-<?= $is_online
-    ? "● ONLINE"
-    : "● OFFLINE"
+<?php
+
+if ($is_online) {
+
+    echo "● ONLINE";
+
+} else {
+
+    echo "● OFFLINE";
+
+}
+
 ?>
 
 </div>
 
 
-<!-- INFORMATION -->
+<!-- =====================================================
+     SERVER INFORMATION
+===================================================== -->
 
 <table class="info-table">
 
-<tr>
-<th>Server ID</th>
-<td><?= h($server_id) ?></td>
-</tr>
 
 <tr>
-<th>Current Command</th>
-<td><?= h($command) ?></td>
-</tr>
 
-<tr>
-<th>Server Status</th>
-<td><?= h($display_status) ?></td>
-</tr>
+<th>
+Server ID
+</th>
 
-<tr>
-<th>Last Seen</th>
 <td>
-<?= $last_seen
-    ? h($last_seen)
-    : "Never"
-?>
+<?= h($server_id) ?>
 </td>
+
 </tr>
 
-<tr>
-<th>Command Time</th>
-<td>
-<?= $command_time
-    ? h($command_time)
-    : "Never"
-?>
-</td>
-</tr>
 
 <tr>
-<th>Executed Time</th>
+
+<th>
+Current Command
+</th>
+
 <td>
-<?= $executed_time
-    ? h($executed_time)
-    : "Never"
-?>
+<?= h($command) ?>
 </td>
+
 </tr>
+
+
+<tr>
+
+<th>
+Server Status
+</th>
+
+<td>
+<?= h($display_status) ?>
+</td>
+
+</tr>
+
+
+<tr>
+
+<th>
+Last Seen
+</th>
+
+<td>
+<?= h($last_seen_display) ?>
+</td>
+
+</tr>
+
+
+<tr>
+
+<th>
+Command Time
+</th>
+
+<td>
+<?= h($command_time_display) ?>
+</td>
+
+</tr>
+
+
+<tr>
+
+<th>
+Executed Time
+</th>
+
+<td>
+<?= h($executed_time_display) ?>
+</td>
+
+</tr>
+
 
 </table>
 
 
-<!-- START / STOP -->
+<!-- =====================================================
+     START / STOP BUTTONS
+===================================================== -->
 
 <div class="button-area">
 
+
+<!-- =====================================================
+     START
+===================================================== -->
 
 <form
     method="POST"
@@ -862,6 +1124,7 @@ SERVER:
     value="START"
 >
 
+
 <button
     type="submit"
     class="control-button start-button"
@@ -873,6 +1136,10 @@ START LOCAL SERVER
 
 </form>
 
+
+<!-- =====================================================
+     STOP
+===================================================== -->
 
 <form
     method="POST"
@@ -890,6 +1157,7 @@ START LOCAL SERVER
     value="STOP"
 >
 
+
 <button
     type="submit"
     class="control-button stop-button"
@@ -905,15 +1173,19 @@ STOP LOCAL SERVER
 </div>
 
 
-<!-- HOW IT WORKS -->
+<!-- =====================================================
+     HOW IT WORKS
+===================================================== -->
 
 <div class="note">
 
-<strong>How it works:</strong>
+<strong>
+How it works:
+</strong>
 
 <br><br>
 
-1. Click START or STOP.
+1. Click START or STOP above.
 
 <br>
 
@@ -925,12 +1197,12 @@ table in TiDB Cloud.
 
 3. The Windows program
 <code>local_server_control.py</code>
-checks TiDB continuously.
+running on MY-PC checks TiDB.
 
 <br>
 
-4. The Windows program starts or stops
-XAMPP Apache.
+4. The Windows program executes the command
+against XAMPP.
 
 <br>
 
@@ -945,14 +1217,34 @@ and
 
 <div class="refresh-info">
 
-Page automatically refreshes every 5 seconds.
+This page automatically refreshes every 5 seconds.
 
 </div>
 
 
 </div>
 
+
 </div>
+
+
+<!-- =====================================================
+     AUTOMATIC REFRESH
+===================================================== -->
+
+<script>
+
+setTimeout(
+    function () {
+
+        window.location.reload();
+
+    },
+    5000
+);
+
+</script>
+
 
 </body>
 
@@ -960,6 +1252,10 @@ Page automatically refreshes every 5 seconds.
 
 <?php
 
-mysqli_close($conn);
+if (isset($conn)) {
+
+    mysqli_close($conn);
+
+}
 
 ?>
